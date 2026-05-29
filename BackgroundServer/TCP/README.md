@@ -148,7 +148,7 @@ BackgroundServer/TCP/
 
 ```cpp
 MYSQL *ret = mysql_real_connect(&mysql, 
-    "139.199.212.89",  // 数据库地址
+    "127.0.0.1",  // 数据库地址
     "admin",           // 用户名
     "admin123",        // 密码
     NULL,              // 数据库名（稍后切换）

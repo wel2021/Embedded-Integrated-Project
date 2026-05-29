@@ -37,7 +37,7 @@ Func::Func(QString ID,QWidget *parent) :
     ui->label_hum->setText("30%");
     ui->label_robot->setPixmap(QPixmap(":/new/prefix1/res/机器人.png"));
     TcpSocket = new QTcpSocket(this);
-    TcpSocket->connectToHost("139.199.212.89",10000);//连接服务器访问数据库
+    TcpSocket->connectToHost("127.0.0.1",10000);//连接服务器访问数据库
     connect(TcpSocket,SIGNAL(readyRead()),this,SLOT(slot_TcpSocket_readyRead()));//有服务器返回数据读取
 
     connect(TcpSocket,&QTcpSocket::connected,[=](){

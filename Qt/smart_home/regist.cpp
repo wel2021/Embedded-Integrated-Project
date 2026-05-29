@@ -11,7 +11,7 @@ regist::regist(QWidget *parent) :
     ui->setupUi(this);
 
     TcpSocket = new QTcpSocket(this);
-    TcpSocket->connectToHost("139.199.212.89",10000);
+    TcpSocket->connectToHost("127.0.0.1",10000);
 
     connect(TcpSocket,SIGNAL(readyRead()),this,SLOT(slot_TcpSocket_readyRead()));
 }

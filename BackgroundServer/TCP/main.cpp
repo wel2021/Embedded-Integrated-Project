@@ -454,7 +454,7 @@ bool connectDB(MYSQL &mysql)
     // 设置字符编码
     mysql_options(&mysql, MYSQL_SET_CHARSET_NAME, "utf8");
     // 连接数据库
-    MYSQL *ret = mysql_real_connect(&mysql, "139.199.212.89", "admin", "admin123", NULL, 3306, NULL, 0);
+    MYSQL *ret = mysql_real_connect(&mysql, "127.0.0.1", "root", "123456", NULL, 3306, NULL, 0);
     if (ret == NULL){
         cout << "数据库连接失败！原因：" << mysql_error(&mysql) << endl;
         return false;
