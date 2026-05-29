@@ -1,10 +1,13 @@
-﻿#pragma execution_character_set("utf-8")
+﻿#ifdef Q_CC_MSVC
+#pragma execution_character_set("utf-8")
+#endif
 
 #include "switchbutton.h"
 #include "qpainter.h"
 #include "qevent.h"
 #include "qtimer.h"
 #include "qdebug.h"
+#include <QPainterPath>
 
 SwitchButton::SwitchButton(QWidget *parent): QWidget(parent)
 {
