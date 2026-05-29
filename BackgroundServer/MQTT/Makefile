@@ -9,4 +9,4 @@ FLAG += -lmysqlclient
 
 
 all:
-	g++ main.cpp ${FLAG}
+	g++ main.cpp ${FLAG} -I/opt/homebrew/include -L/opt/homebrew/lib
