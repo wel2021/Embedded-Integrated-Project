@@ -1,35 +1,154 @@
-/* According to POSIX.1-2001, POSIX.1-2008 */
-#include <sys/epoll.h>
-/* According to earlier standards */
-#include <sys/time.h>
-#include <sys/types.h>
-#include <unistd.h>
-/* Network form */
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/ip.h> /* superset of previous */
+/* Boost.Asio - 跨平台网络库 */
+#include <boost/asio.hpp>
+#include <boost/shared_ptr.hpp>
+#include <boost/enable_shared_from_this.hpp>
+#include <boost/array.hpp>
 /* std */ 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <iostream>
+#include <memory>
 using namespace std;
 /*-------- Mysql ------------*/
 #include <mysql/mysql.h>
 /*-------- JSON -------------*/
-#include <jsoncpp/json/json.h>
+#include <json/json.h>
 using namespace Json;
+
+using boost::asio::ip::tcp;
+
 /************* 网络编程服务器作为案例 *********************************************************************
- * 发现网络编程服务器,处理客户端消息，检测客户端套接字是否有数据可读?
+ * 使用Boost.Asio实现跨平台TCP服务器
  * 1.监听 sid 服务器有用户连接
  * 2.监听 cid 客户端有数据可读
  * 
- * 创建epoll描述符 int epoll_create(int size);
- * 操作epoll描述符 int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
- * 监听epoll描述符 int epoll_wait(int epfd, struct epoll_event *events,int maxevents, int timeout);
+ * Boost.Asio会自动在底层调用:
+ * - macOS: kqueue
+ * - Linux: epoll
+ * - Windows: IOCP
  * ***************************************************************************************************/
 #define MAXSIZE 1024
 #include "main.h"
+
+// 前向声明业务逻辑函数
+void tcp_ret_state(int cid, Value &json, MYSQL &mysql);
+void tcp_get_bind(int cid, Value &json, MYSQL &mysql);
+void tcp_bind(int cid, Value &json, MYSQL &mysql);
+void tcp_login(int cid, Value &json, MYSQL &mysql);
+void tcp_regist(int cid, Value &json, MYSQL &mysql);
+bool connectDB(MYSQL &mysql);
+
+// 前向声明
+void handle_client_message(tcp::socket& socket, char* buf, int len, MYSQL& mysql);
+
+// 会话类：负责处理单个客户端的连接与数据收发
+class Session : public boost::enable_shared_from_this<Session> {
+public:
+    typedef boost::shared_ptr<Session> pointer;
+    
+    static pointer create(boost::asio::io_context& io_context, MYSQL& mysql) {
+        return pointer(new Session(io_context, mysql));
+    }
+    
+    tcp::socket& socket() {
+        return socket_;
+    }
+    
+    void start() {
+        do_read();
+    }
+    
+private:
+    tcp::socket socket_;
+    MYSQL& mysql_;
+    enum { max_length = 200 };
+    char data_[max_length];
+    
+    Session(boost::asio::io_context& io_context, MYSQL& mysql)
+        : socket_(io_context), mysql_(mysql) {
+        memset(data_, 0, sizeof(data_));
+    }
+    
+    void do_read() {
+        auto self(shared_from_this());
+        socket_.async_read_some(
+            boost::asio::buffer(data_, max_length),
+            [this, self](boost::system::error_code ec, std::size_t length) {
+                if (!ec) {
+                    // 读取成功，处理消息
+                    handle_client_message(socket_, data_, length, mysql_);
+                    // 继续读取下一条消息
+                    do_read();
+                } else {
+                    // 连接断开
+                    printf("有内鬼,终止交易\n");
+                }
+            });
+    }
+};
+
+// 服务器类：负责监听端口和接受连接
+class TcpServer {
+public:
+    TcpServer(boost::asio::io_context& io_context, short port, MYSQL& mysql)
+        : acceptor_(io_context, tcp::endpoint(tcp::v4(), port)), mysql_(mysql), io_context_(io_context) {
+        do_accept();
+    }
+    
+private:
+    tcp::acceptor acceptor_;
+    MYSQL& mysql_;
+    boost::asio::io_context& io_context_;
+    
+    void do_accept() {
+        acceptor_.async_accept(
+            [this](boost::system::error_code ec, tcp::socket socket) {
+                if (!ec) {
+                    printf("有cid连接\n");
+                    // 创建会话并启动
+                    auto session = Session::create(io_context_, mysql_);
+                    // 将接受的socket移动到session
+                    new (&session->socket()) tcp::socket(std::move(socket));
+                    session->start();
+                }
+                // 继续接受下一个连接
+                do_accept();
+            });
+    }
+};
+
+// 处理客户端消息的辅助函数
+void handle_client_message(tcp::socket& socket, char* buf, int len, MYSQL& mysql) {
+    if (len <= 0) return;
+    
+    /*----------- 处理客户端cid的内容 ---------------*/
+    /*--------------- MQTT数据处理:JSON ------------------*/
+    Reader json_reader;
+    Value json;  //JSON对象
+    
+    json_reader.parse(buf, json);    //解析
+    if(json.isObject() == false) return;
+    
+    /*--------------------- 客户端发送JSON格式:注册信息 -------------------------*/
+    if(json.isMember("CMD") == true)
+    {
+        // 获取socket的文件描述符用于发送响应
+        int cid = socket.native_handle();
+        
+        if(json["CMD"].asString() == "注册")
+            tcp_regist(cid, json, mysql);
+        else if(json["CMD"].asString() == "登录")
+            tcp_login(cid, json, mysql);
+        else if(json["CMD"].asString() == "绑定")
+            tcp_bind(cid, json, mysql);
+        else if(json["CMD"].asString() == "获取绑定")
+            tcp_get_bind(cid, json, mysql);
+        else if(json["CMD"].asString() == "状态")
+            tcp_ret_state(cid, json, mysql);
+    }
+}
+
 int main()
 {
     /*----------- 连接数据库 ---------------------------------------------------------*/
@@ -39,97 +158,27 @@ int main()
     }
     else{
         cout << "连接mysql数据库失败" << endl;
-    }
-    mysql_select_db(&mysql,"myproject");//切换数据库
-    //1.创建套接字
-    int sid = socket(AF_INET, SOCK_STREAM, 0);
-
-    //2.绑定
-    struct sockaddr_in IPv4;
-    IPv4.sin_family = AF_INET;
-    IPv4.sin_port = htons(10000);        //端口号:10000
-    IPv4.sin_addr.s_addr = 0;            //IP地址:双栈协议,任意网卡绑定
-
-    /*--- 因为我要做测试,可能重复开启服务器,导致绑定失败,实现端口复用 ---*/
-    int on = 1;
-    setsockopt(sid, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));
-
-    if(bind(sid,(struct sockaddr *)&IPv4,sizeof(IPv4)) < 0)
-    {
-        perror("绑定失败:");
         return -1;
     }
-
-    //3.监听
-    listen(sid,10);
-
-    //----------- 1.创建epoll描述符 --------------------
-    int epfd = epoll_create(MAXSIZE);
-
-    //----------  2.将文件描述符加入 --------------------
-    struct epoll_event event;
-    event.events = EPOLLIN;
-    event.data.fd = sid;
-
-    epoll_ctl(epfd,EPOLL_CTL_ADD,sid,&event);
-    //总结: 
-    //     1.epoll 是select 和 epoll 的升级版
-    //     2.epoll 没有数量限制,而且使用的是内核事件表(存在内存中)
-    //     3.epoll 不需要清空后重复加载文件描述符
-    //     4.epoll 不需要进行全部轮询
-    //----------- 3.监听epoll 描述符 -------------------
-    struct epoll_event events[MAXSIZE];
-    while(1)
-    {
-        int count = epoll_wait(epfd,events,MAXSIZE,3000);
-        for(int i = 0; i < count;i++)
-        {
-            if(events[i].data.fd == sid)    //服务器
-            {
-                int cid = accept(sid,NULL,NULL);
-                printf("有cid = %d连接\n",cid);
-                /*---- 将客户端套接字添加到epoll中 -----*/
-                event.data.fd = cid;
-                epoll_ctl(epfd,EPOLL_CTL_ADD,cid,&event);
-            }
-            else    //客户端套接字
-            {
-                int cid = events[i].data.fd;
-                char buf[200] = "";
-                int len = recv(cid,buf,sizeof(buf),0);
-                if(len <= 0){
-                    printf("有内鬼,终止交易\n");
-                    /*---- 将监听的套接字从epoll中删除 -----*/
-                    epoll_ctl(epfd,EPOLL_CTL_DEL,cid,NULL);
-
-                    close(cid);
-                    continue;
-                }
-                
-                /*----------- 处理客户端cid的内容 ---------------*/
-                /*--------------- MQTT数据处理:JSON ------------------*/
-                Reader json_reader;
-                Value json;  //JSON对象
-
-                json_reader.parse(buf,json);    //解析
-                if(json.isObject() == false) continue;
-                /*--------------------- 客户端发送JSON格式:注册信息 -------------------------*/
-                if(json.isMember("CMD") == true)
-                {
-                    if(json["CMD"].asString() == "注册")
-                        tcp_regist(cid,json,mysql);
-                    else if(json["CMD"].asString() == "登录")
-                        tcp_login(cid,json,mysql);
-                    else if(json["CMD"].asString() == "绑定")
-                        tcp_bind(cid,json,mysql);
-                    else if(json["CMD"].asString() == "获取绑定")
-                        tcp_get_bind(cid,json,mysql);
-                    else if(json["CMD"].asString() == "状态")
-                        tcp_ret_state(cid,json,mysql);
-                }
-            }
-        }
+    mysql_select_db(&mysql,"myproject");//切换数据库
+    
+    try {
+        // 1. 创建 io_context (核心事件循环，替代 epoll_create)
+        boost::asio::io_context io_context;
+        
+        // 2. 启动服务器，监听 10000 端口
+        TcpServer server(io_context, 10000, mysql);
+        cout << "Server running on port 10000..." << endl;
+        
+        // 3. 运行事件循环（在 macOS 底层自动调用 kqueue，Linux 调用 epoll）
+        io_context.run();
     }
+    catch (std::exception& e) {
+        cerr << "Exception: " << e.what() << "\n";
+        return -1;
+    }
+    
+    return 0;
 }
 
 void tcp_ret_state(int cid,Value &json,MYSQL &mysql){
